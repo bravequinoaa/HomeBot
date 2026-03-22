@@ -37,6 +37,8 @@ _SUPPORTED: dict[str, str] = {
     ".pdf": "pdf",
 }
 
+CH_CALENDAR_UPLOAD_ID = str(os.environ.get('CH_CALENDAR_UPLOAD_ID'))
+
 
 class ScheduleCog(commands.Cog):
     """Converts schedule images/PDFs to .ics calendar files."""
@@ -48,9 +50,14 @@ class ScheduleCog(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
+        
+        # Verify that the message is coming from the upload channel
+        if message.channel_id != CH_CALENDAR_UPLOAD_ID:
+            return
 
         attachment = _find_supported_attachment(message)
         if attachment is None:
+            log.info('new message but no file attached -- ignoring')
             return
 
         # Size guard
