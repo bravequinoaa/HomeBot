@@ -1,0 +1,10 @@
+
+Initialize a project in this directory.
+
+I have an idea for a project where my girlfriend will upload a photo/pdf of her schedule. This photo/pdf may slightly vary in appearance, but will usually follow some type of loose format. Itll be a hour to hour breakdown for the week. i.e., wake up 6am, work 630-10, meetings 10-11:30pm, lunch break: 11:30-12, 12-2 work, study between 2pm-5pm, dinner 5pm-6pm. The formatting i used is intentional since how these schedules are written may vary/
+
+An agent should be set up and read this file and parse each task and convert to .ics files that i can import to my phone. 
+
+File handling and sending .ics back will be run through a discord bot on my discord server. 
+
+Ask me any questions you may have. Please plan this out before committing anything.

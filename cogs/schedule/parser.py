@@ -1,0 +1,272 @@
+"""
+Schedule parsing via Claude API.
+
+Takes raw file bytes (image or PDF) and returns a list of AnchoredEvents
+with concrete dates ready for .ics generation.
+"""
+
+from __future__ import annotations
+
+import base64
+import datetime
+import json
+import os
+import re
+from typing import TypedDict
+
+import anthropic
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class ScheduleParseError(Exception):
+    """Claude returned invalid or unparseable output."""
+
+
+class EmptyScheduleError(Exception):
+    """Claude returned zero events."""
+
+
+# ---------------------------------------------------------------------------
+# Data types
+# ---------------------------------------------------------------------------
+
+
+class ParsedEvent(TypedDict):
+    day_name: str           # "Monday" – "Sunday"
+    date_string: str | None  # "YYYY-MM-DD" or None
+    title: str
+    start_time: str         # "HH:MM" 24-hour
+    end_time: str | None    # "HH:MM" 24-hour or None
+
+
+class ParsedSchedule(TypedDict):
+    has_explicit_dates: bool
+    events: list[ParsedEvent]
+
+
+class AnchoredEvent(TypedDict):
+    date: datetime.date
+    day_name: str
+    title: str
+    start_time: str         # "HH:MM" 24-hour
+    end_time: str | None    # "HH:MM" 24-hour or None
+
+
+# ---------------------------------------------------------------------------
+# Claude prompt
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT = (
+    "You are a schedule extraction engine. "
+    "Your only output is valid JSON — no explanation, no markdown fences, "
+    "no prose before or after the JSON object."
+)
+
+_USER_PROMPT = """\
+Extract all scheduled events from this schedule.
+
+Return a JSON object with this exact schema:
+{
+  "has_explicit_dates": true | false,
+  "events": [
+    {
+      "day_name": "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday",
+      "date_string": "YYYY-MM-DD or null if no explicit date",
+      "title": "short event label",
+      "start_time": "HH:MM in 24-hour format",
+      "end_time": "HH:MM in 24-hour format or null if no end time"
+    }
+  ]
+}
+
+Rules:
+- Set has_explicit_dates to true only if actual calendar dates appear (e.g. "March 3" or "3/3").
+- Normalize ALL times to 24-hour HH:MM format.
+  Examples: "630" -> "06:30", "6:30am" -> "06:30", "10pm" -> "22:00",
+  "11:30pm" -> "23:30", "noon" -> "12:00", "midnight" -> "00:00"
+- If a range like "630-10" appears, interpret as start 06:30 end 10:00.
+- Use context to disambiguate AM/PM (e.g. a block following morning events is AM).
+- If an event has no end time, set end_time to null.
+- Produce one entry per event per day.
+- Keep the title short and descriptive (e.g. "Work", "Lunch", "Meeting").
+- Include every event visible; make your best guess for anything unclear.
+- Output only the JSON object. Nothing else."""
+
+# ---------------------------------------------------------------------------
+# Claude API call
+# ---------------------------------------------------------------------------
+
+_MODEL = "claude-sonnet-4-6"
+
+# Supported image MIME types
+_IMAGE_MIME_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _strip_fences(raw: str) -> str:
+    """Remove accidental ```json ... ``` fences Claude sometimes adds."""
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+    raw = re.sub(r"\s*```$", "", raw, flags=re.MULTILINE)
+    return raw.strip()
+
+
+async def parse_schedule(
+    file_bytes: bytes,
+    file_type: str,
+    media_type: str = "image/jpeg",
+) -> list[AnchoredEvent]:
+    """
+    Call the Claude API with the provided file bytes and return AnchoredEvents.
+
+    Parameters
+    ----------
+    file_bytes:
+        Raw bytes of the uploaded file.
+    file_type:
+        Either "image" or "pdf".
+    media_type:
+        MIME type for images (e.g. "image/png"). Ignored for PDFs.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set in the environment.")
+
+    encoded = base64.standard_b64encode(file_bytes).decode("utf-8")
+
+    if file_type == "pdf":
+        client = anthropic.AsyncAnthropic(
+            api_key=api_key,
+            default_headers={"anthropic-beta": "pdfs-2024-09-25"},
+        )
+        content_block: dict = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": encoded,
+            },
+        }
+    else:
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        content_block = {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": encoded,
+            },
+        }
+
+    response = await client.messages.create(
+        model=_MODEL,
+        max_tokens=2048,
+        system=_SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    content_block,
+                    {"type": "text", "text": _USER_PROMPT},
+                ],
+            }
+        ],
+    )
+
+    raw_text = response.content[0].text if response.content else ""
+
+    try:
+        data: ParsedSchedule = json.loads(_strip_fences(raw_text))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ScheduleParseError(
+            f"Claude returned non-JSON output: {raw_text[:200]}"
+        ) from exc
+
+    events = data.get("events", [])
+    if not events:
+        raise EmptyScheduleError("No events were found in the schedule.")
+
+    return anchor_events(data)
+
+
+# ---------------------------------------------------------------------------
+# Date anchoring
+# ---------------------------------------------------------------------------
+
+_DAY_ORDER = [
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+]
+
+
+def anchor_events(
+    parsed: ParsedSchedule,
+    reference_dt: datetime.datetime | None = None,
+) -> list[AnchoredEvent]:
+    """
+    Convert ParsedSchedule events to AnchoredEvents with concrete dates.
+
+    If the schedule has explicit dates, parse them directly.
+    Otherwise anchor to the upcoming Monday from reference_dt (default: today).
+    """
+    if reference_dt is None:
+        reference_dt = datetime.datetime.now()
+
+    today = reference_dt.date()
+    anchored: list[AnchoredEvent] = []
+
+    if parsed.get("has_explicit_dates"):
+        for ev in parsed["events"]:
+            ds = ev.get("date_string")
+            if ds:
+                try:
+                    date = datetime.date.fromisoformat(ds)
+                except ValueError:
+                    date = _fallback_date(ev.get("day_name", "Monday"), today)
+            else:
+                date = _fallback_date(ev.get("day_name", "Monday"), today)
+
+            anchored.append(_make_anchored(ev, date))
+    else:
+        # Anchor to the upcoming Monday (or today if today is Monday)
+        days_ahead = (7 - today.weekday()) % 7  # 0 when today is Monday
+        anchor_monday = today + datetime.timedelta(days=days_ahead)
+
+        for ev in parsed["events"]:
+            day_name = ev.get("day_name", "Monday")
+            try:
+                day_index = _DAY_ORDER.index(day_name)
+            except ValueError:
+                day_index = 0  # default to Monday on unknown day name
+            date = anchor_monday + datetime.timedelta(days=day_index)
+            anchored.append(_make_anchored(ev, date))
+
+    return anchored
+
+
+def _fallback_date(day_name: str, today: datetime.date) -> datetime.date:
+    """Anchor a single day name to the upcoming week."""
+    days_ahead = (7 - today.weekday()) % 7
+    anchor_monday = today + datetime.timedelta(days=days_ahead)
+    try:
+        day_index = _DAY_ORDER.index(day_name)
+    except ValueError:
+        day_index = 0
+    return anchor_monday + datetime.timedelta(days=day_index)
+
+
+def _make_anchored(ev: ParsedEvent, date: datetime.date) -> AnchoredEvent:
+    return AnchoredEvent(
+        date=date,
+        day_name=ev.get("day_name", ""),
+        title=ev.get("title", "Event"),
+        start_time=ev.get("start_time", "00:00"),
+        end_time=ev.get("end_time"),
+    )
