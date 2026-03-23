@@ -52,7 +52,7 @@ class ScheduleCog(commands.Cog):
             return
         
         # Verify that the message is coming from the upload channel
-        if message.channel_id != CH_CALENDAR_UPLOAD_ID:
+        if message.channel != CH_CALENDAR_UPLOAD_ID:
             return
 
         attachment = _find_supported_attachment(message)
