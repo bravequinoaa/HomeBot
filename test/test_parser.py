@@ -168,6 +168,38 @@ def test_anchor_full_week():
         assert ev["date"] == expected, f"{ev['day_name']} should be {expected}"
 
 
+def test_anchor_day_names_multi_week():
+    """Two Mondays in the same schedule land on consecutive Mondays."""
+    schedule = {
+        "has_explicit_dates": False,
+        "events": [
+            {"day_name": "Monday", "title": "W1 Monday", "start_time": "09:00", "end_time": None},
+            {"day_name": "Wednesday", "title": "W1 Wednesday", "start_time": "09:00", "end_time": None},
+            {"day_name": "Monday", "title": "W2 Monday", "start_time": "09:00", "end_time": None},
+            {"day_name": "Wednesday", "title": "W2 Wednesday", "start_time": "09:00", "end_time": None},
+        ],
+    }
+    result = anchor_events(schedule, reference_dt=_MONDAY_REF)
+    assert result[0]["date"] == datetime.date(2026, 3, 23)   # 1st Monday
+    assert result[1]["date"] == datetime.date(2026, 3, 25)   # 1st Wednesday
+    assert result[2]["date"] == datetime.date(2026, 3, 30)   # 2nd Monday (next week)
+    assert result[3]["date"] == datetime.date(2026, 4,  1)   # 2nd Wednesday (next week)
+
+
+def test_anchor_day_names_four_week_monday():
+    """Four Mondays span four consecutive weeks."""
+    schedule = {
+        "has_explicit_dates": False,
+        "events": [
+            {"day_name": "Monday", "title": f"Week {i}", "start_time": "09:00", "end_time": None}
+            for i in range(1, 5)
+        ],
+    }
+    result = anchor_events(schedule, reference_dt=_MONDAY_REF)
+    expected_mondays = [datetime.date(2026, 3, 23) + datetime.timedelta(weeks=i) for i in range(4)]
+    assert [ev["date"] for ev in result] == expected_mondays
+
+
 def test_anchor_unknown_day_defaults_to_monday():
     schedule = {
         "has_explicit_dates": False,

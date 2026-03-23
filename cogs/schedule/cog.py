@@ -37,23 +37,18 @@ _SUPPORTED: dict[str, str] = {
     ".pdf": "pdf",
 }
 
-def _load_channel_id() -> int:
-    raw = os.environ.get("CH_CALENDAR_UPLOAD_ID")
-    if not raw:
-        raise RuntimeError("CH_CALENDAR_UPLOAD_ID is not set in the environment.")
-    try:
-        return int(raw)
-    except ValueError:
-        raise RuntimeError(f"CH_CALENDAR_UPLOAD_ID must be an integer, got: {raw!r}")
-
-CALENDAR_UPLOAD_CHANNEL_ID: int = _load_channel_id()
-
-
 class ScheduleCog(commands.Cog):
     """Converts schedule images/PDFs to .ics calendar files."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        raw = os.environ.get("CH_CALENDAR_UPLOAD_ID")
+        if not raw:
+            raise RuntimeError("CH_CALENDAR_UPLOAD_ID is not set in the environment.")
+        try:
+            self.upload_channel_id = int(raw)
+        except ValueError:
+            raise RuntimeError(f"CH_CALENDAR_UPLOAD_ID must be an integer, got: {raw!r}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -61,7 +56,7 @@ class ScheduleCog(commands.Cog):
             return
 
         # Only process messages in the designated schedule upload channel
-        if message.channel.id != CALENDAR_UPLOAD_CHANNEL_ID:
+        if message.channel.id != self.upload_channel_id:
             return
 
         attachment = _find_supported_attachment(message)

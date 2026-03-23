@@ -90,7 +90,8 @@ _SYSTEM_PROMPT = (
 )
 
 _USER_PROMPT = """\
-Extract all scheduled events from this schedule.
+Extract all scheduled events from this schedule. The schedule may cover any date range — \
+a few days, a week, multiple weeks, or a full month.
 
 Return a JSON object with this exact schema:
 {
@@ -98,7 +99,7 @@ Return a JSON object with this exact schema:
   "events": [
     {
       "day_name": "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday",
-      "date_string": "YYYY-MM-DD or null if no explicit date",
+      "date_string": "YYYY-MM-DD or null if no explicit date can be determined",
       "title": "short event label",
       "start_time": "HH:MM in 24-hour format",
       "end_time": "HH:MM in 24-hour format or null if no end time"
@@ -107,14 +108,23 @@ Return a JSON object with this exact schema:
 }
 
 Rules:
-- Set has_explicit_dates to true only if actual calendar dates appear (e.g. "March 3" or "3/3").
+- Set has_explicit_dates to true if any actual calendar dates appear ANYWHERE in the document —
+  including page titles, column headers, row labels, or printed dates next to day names
+  (e.g. "Week of March 23", "Mon 3/24", "March 24", "3/24/26").
+- When has_explicit_dates is true, populate date_string for EVERY event using the date shown
+  in the column header, row label, or section title that the event falls under. Do not leave
+  date_string null for any event if a date can be inferred from its position on the page.
+- Convert all dates to YYYY-MM-DD format (e.g. "March 24, 2026" -> "2026-03-24").
+  If the year is not shown, assume the current or next upcoming year.
 - Normalize ALL times to 24-hour HH:MM format.
   Examples: "630" -> "06:30", "6:30am" -> "06:30", "10pm" -> "22:00",
   "11:30pm" -> "23:30", "noon" -> "12:00", "midnight" -> "00:00"
 - If a range like "630-10" appears, interpret as start 06:30 end 10:00.
 - Use context to disambiguate AM/PM (e.g. a block following morning events is AM).
 - If an event has no end time, set end_time to null.
-- Produce one entry per event per day.
+- Produce one entry per event per day. If the same day name appears multiple times
+  (e.g. two Mondays across two weeks), emit a separate event entry for each occurrence
+  with the correct date_string.
 - Keep the title short and descriptive (e.g. "Work", "Lunch", "Meeting").
 - Include every event visible; make your best guess for anything unclear.
 - Output only the JSON object. Nothing else."""
@@ -192,7 +202,7 @@ async def parse_schedule(
 
     response = await client.messages.create(
         model=_MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         system=_SYSTEM_PROMPT,
         messages=[
             {
@@ -260,17 +270,26 @@ def anchor_events(
 
             anchored.append(_make_anchored(ev, date))
     else:
-        # Anchor to the upcoming Monday (or today if today is Monday)
+        # Anchor to the upcoming Monday (or today if today is Monday).
+        # Track how many times each day name has appeared so that the 2nd
+        # occurrence of "Monday" is pushed to the following week, the 3rd
+        # to the week after that, etc. — supporting multi-week schedules.
         days_ahead = (7 - today.weekday()) % 7  # 0 when today is Monday
         anchor_monday = today + datetime.timedelta(days=days_ahead)
+        seen: dict[str, int] = {}  # day_name -> occurrence count (0-based)
 
         for ev in parsed["events"]:
             day_name = ev.get("day_name", "Monday")
             try:
                 day_index = _DAY_ORDER.index(day_name)
             except ValueError:
-                day_index = 0  # default to Monday on unknown day name
-            date = anchor_monday + datetime.timedelta(days=day_index)
+                day_index = 0
+
+            occurrence = seen.get(day_name, 0)
+            seen[day_name] = occurrence + 1
+
+            week_offset = datetime.timedelta(weeks=occurrence)
+            date = anchor_monday + datetime.timedelta(days=day_index) + week_offset
             anchored.append(_make_anchored(ev, date))
 
     return anchored
