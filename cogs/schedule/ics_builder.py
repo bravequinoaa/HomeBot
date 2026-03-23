@@ -34,16 +34,17 @@ def build_ics(events: list[AnchoredEvent]) -> tuple[str, bytes]:
     cal.add("x-wr-calname", "Weekly Schedule")
     cal.add("x-wr-timezone", "America/New_York")
 
-    for ev in events:
+    valid_events = [ev for ev in events if ev.get("start_time")]
+    for ev in valid_events:
         cal.add_component(_build_vevent(ev))
 
     ics_bytes: bytes = cal.to_ical()
 
-    # Determine date range for filename
-    dates = [ev["date"] for ev in events]
+    # Determine date range for filename using only events that were included
+    dates = [ev["date"] for ev in valid_events]
     start_date = min(dates)
     end_date = max(dates)
-    filename = f"{start_date.isoformat()}-{end_date.isoformat()}.ics"
+    filename = f"{start_date.strftime('%m%d%y')}-{end_date.strftime('%m%d%y')}.ics"
 
     return filename, ics_bytes
 
