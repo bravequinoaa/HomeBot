@@ -10,11 +10,35 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import logging
+import logging.handlers
 import os
 import re
 from typing import TypedDict
 
 import anthropic
+
+# ---------------------------------------------------------------------------
+# Claude response logger
+# Writes raw Claude JSON responses to logs/claude_responses.log
+# ---------------------------------------------------------------------------
+
+os.makedirs("logs", exist_ok=True)
+
+_claude_log = logging.getLogger("claude_responses")
+_claude_log.setLevel(logging.DEBUG)
+_claude_log.propagate = False  # don't bubble up to the root logger
+
+_claude_handler = logging.handlers.RotatingFileHandler(
+    "logs/claude_responses.log",
+    maxBytes=5 * 1024 * 1024,  # 5 MB per file
+    backupCount=3,
+    encoding="utf-8",
+)
+_claude_handler.setFormatter(
+    logging.Formatter("%(asctime)s\n%(message)s\n" + "-" * 80, datefmt="%Y-%m-%d %H:%M:%S")
+)
+_claude_log.addHandler(_claude_handler)
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -182,6 +206,7 @@ async def parse_schedule(
     )
 
     raw_text = response.content[0].text if response.content else ""
+    _claude_log.debug("file_type=%s\n%s", file_type, raw_text)
 
     try:
         data: ParsedSchedule = json.loads(_strip_fences(raw_text))
@@ -263,10 +288,12 @@ def _fallback_date(day_name: str, today: datetime.date) -> datetime.date:
 
 
 def _make_anchored(ev: ParsedEvent, date: datetime.date) -> AnchoredEvent:
+    # Use `or` so that an explicit null from Claude falls back to the default
+    # just as a missing key would.
     return AnchoredEvent(
         date=date,
-        day_name=ev.get("day_name", ""),
-        title=ev.get("title", "Event"),
-        start_time=ev.get("start_time", "00:00"),
-        end_time=ev.get("end_time"),
+        day_name=ev.get("day_name") or "",
+        title=ev.get("title") or "Event",
+        start_time=ev.get("start_time") or "00:00",
+        end_time=ev.get("end_time") or None,
     )
