@@ -125,7 +125,10 @@ Rules:
 - Produce one entry per event per day. If the same day name appears multiple times
   (e.g. two Mondays across two weeks), emit a separate event entry for each occurrence
   with the correct date_string.
-- Keep the title short and descriptive (e.g. "Work", "Lunch", "Meeting").
+- Keep the title short and descriptive. Prefix it with a single relevant emoji
+  (e.g. "💼 Work", "🍽️ Lunch", "📋 Meeting", "🏋️ Gym", "😴 Sleep", "🚗 Commute",
+  "📚 Study", "🛒 Errands", "👨‍⚕️ Doctor", "🎉 Event"). If the schedule already has
+  an emoji, keep it. If none fits well, omit the emoji rather than forcing one.
 - Include every event visible; make your best guess for anything unclear.
 - Output only the JSON object. Nothing else."""
 
