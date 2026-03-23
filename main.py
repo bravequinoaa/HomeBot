@@ -18,6 +18,7 @@ log = logging.getLogger("homebot")
 # Add new cog module paths here to extend the bot
 COGS = [
     "cogs.schedule",
+    "cogs.alerts",
 ]
 
 

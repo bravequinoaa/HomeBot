@@ -83,6 +83,7 @@ class ScheduleCog(commands.Cog):
             await message.reply(
                 file=discord.File(io.BytesIO(ics_bytes), filename=filename)
             )
+            self.bot.dispatch("schedule_parsed", anchored_events, message.author.id, message.author.name)
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
 

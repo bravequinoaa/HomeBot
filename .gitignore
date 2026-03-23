@@ -6,3 +6,4 @@ venv/
 .venv/
 logs/
 docker-compose.override.yml
+data/
