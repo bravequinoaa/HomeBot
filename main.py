@@ -19,6 +19,7 @@ log = logging.getLogger("homebot")
 COGS = [
     "cogs.schedule",
     "cogs.alerts",
+    "cogs.bills",
 ]
 
 
