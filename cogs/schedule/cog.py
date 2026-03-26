@@ -7,9 +7,11 @@ Listens for messages with image or PDF attachments and replies with a
 
 from __future__ import annotations
 
+import datetime
 import io
 import logging
 import os
+from pathlib import Path
 
 import anthropic
 import discord
@@ -79,6 +81,14 @@ class ScheduleCog(commands.Cog):
 
             anchored_events = await parse_schedule(file_bytes, file_type, media_type)
             filename, ics_bytes = build_ics(anchored_events)
+
+            # Persist ICS to disk so !refreshdb can restore calendar on a fresh deploy
+            ics_dir = Path(os.environ.get("DATA_DIR", "data")) / "ics_exports"
+            ics_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            export_path = ics_dir / f"{ts}_{filename}"
+            export_path.write_bytes(ics_bytes)
+            log.info("Saved ICS export to %s", export_path)
 
             await message.reply(
                 file=discord.File(io.BytesIO(ics_bytes), filename=filename)

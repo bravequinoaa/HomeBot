@@ -119,6 +119,31 @@ class CalendarStorage(JsonFileStorage):
         )
         self._write(data)
 
+    def restore_events(self, events: list[dict]) -> None:
+        """
+        Write pre-formed event dicts directly to storage (used by !refreshdb).
+
+        Each dict must have at minimum: uid, date, title, start_time.
+        alerted is always set to False so restored events can re-alert if upcoming.
+        Existing events with the same UID are not overwritten (idempotent).
+        """
+        data = self._read()
+        existing: dict[str, dict] = {
+            ev["uid"]: ev for ev in data.get(self._collection_key, [])
+        }
+        added = 0
+        for ev in events:
+            uid = ev.get("uid", "")
+            if uid and uid not in existing:
+                existing[uid] = {**ev, "alerted": False}
+                added += 1
+        data[self._collection_key] = list(existing.values())
+        log.debug(
+            "[%s] CalendarStorage.restore_events added=%d total=%d",
+            hex(id(self)), added, len(existing),
+        )
+        self._write(data)
+
     def prune_old_events(self) -> None:
         """Remove events whose date is strictly before today."""
         today = datetime.date.today().isoformat()

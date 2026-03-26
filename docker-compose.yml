@@ -4,3 +4,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - DATA_DIR=/apps/homebot/data
+      - LOGS_DIR=/apps/homebot/logs
+    volumes:
+      - /apps/homebot/data:/apps/homebot/data
+      - /apps/homebot/logs:/apps/homebot/logs

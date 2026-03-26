@@ -20,17 +20,20 @@ import anthropic
 
 # ---------------------------------------------------------------------------
 # Claude response logger
-# Writes raw Claude JSON responses to logs/claude_responses.log
+# Writes raw Claude JSON responses to LOGS_DIR/claude_responses.log
+# LOGS_DIR defaults to "logs" for local dev; set to /apps/homebot/logs in prod.
 # ---------------------------------------------------------------------------
 
-os.makedirs("logs", exist_ok=True)
+from pathlib import Path as _Path
+_logs_dir = _Path(os.environ.get("LOGS_DIR", "logs"))
+_logs_dir.mkdir(parents=True, exist_ok=True)
 
 _claude_log = logging.getLogger("claude_responses")
 _claude_log.setLevel(logging.DEBUG)
 _claude_log.propagate = False  # don't bubble up to the root logger
 
 _claude_handler = logging.handlers.RotatingFileHandler(
-    "logs/claude_responses.log",
+    _logs_dir / "claude_responses.log",
     maxBytes=5 * 1024 * 1024,  # 5 MB per file
     backupCount=3,
     encoding="utf-8",

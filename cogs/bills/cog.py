@@ -29,8 +29,10 @@ import io
 import logging
 import os
 import re
+from pathlib import Path
 
 import discord
+import icalendar
 import openpyxl
 from discord.ext import commands, tasks
 
@@ -425,6 +427,153 @@ class BillsCog(commands.Cog):
         self._poll.change_interval(hours=hours)
         log.info("Bills poll interval changed to %d hour(s) by %s", hours, ctx.author)
         await ctx.send(f"✅ Poll interval updated to every {hours} hour(s).")
+
+    @commands.command(name="refreshdb")
+    async def refresh_db(self, ctx: commands.Context) -> None:
+        """
+        Restore bills and calendar from channel history + saved ICS exports.
+
+        Only allowed when the bills database is empty (guard against accidental
+        use on a live system).  Run this after a fresh deploy with an empty
+        data volume.
+
+        Bills:   scans this channel's message history for !addbill commands
+                 and re-adds each bill via LegiScan.
+        Calendar: parses every .ics file saved in DATA_DIR/ics_exports/ and
+                  restores events to calendar.json without re-calling the AI.
+        """
+        log.info("Command 'refreshdb' by %s", ctx.author)
+
+        if self.storage.list_bills():
+            await ctx.send(
+                "❌ Database is not empty. `!refreshdb` only runs on a fresh/empty data store.\n"
+                "Remove all bills first with `!removebill` or clear the data file directly."
+            )
+            return
+
+        await ctx.send("🔄 Starting database refresh...")
+
+        # ------------------------------------------------------------------
+        # Part 1 — Bills: scan command channel history for !addbill commands
+        # ------------------------------------------------------------------
+        channel = self.bot.get_channel(self.channel_id)
+        if not channel:
+            await ctx.send("❌ Command channel not found.")
+            return
+
+        await ctx.send("📜 Scanning channel history for `!addbill` commands...")
+        bill_numbers: list[str] = []
+        async for message in channel.history(limit=None, oldest_first=True):
+            if message.author.bot:
+                continue
+            match = re.match(r"^!addbill\s+([A-Za-z0-9]+)", message.content.strip(), re.IGNORECASE)
+            if match:
+                num = match.group(1).upper()
+                if num not in bill_numbers:
+                    bill_numbers.append(num)
+
+        log.info("refreshdb: found %d unique !addbill command(s) in history", len(bill_numbers))
+
+        added_bills, failed_bills = [], []
+        async with ctx.typing():
+            for bill_number in bill_numbers:
+                key = self.storage.bill_key(bill_number)
+                try:
+                    result = await self.client.search_bill(bill_number)
+                except LegiScanError as exc:
+                    log.error("refreshdb: LegiScan search error for %s: %s", bill_number, exc)
+                    failed_bills.append(bill_number)
+                    continue
+                if not result:
+                    failed_bills.append(bill_number)
+                    continue
+                try:
+                    full = await self.client.get_bill(result["bill_id"])
+                except LegiScanError as exc:
+                    log.error("refreshdb: LegiScan fetch error for %s: %s", bill_number, exc)
+                    failed_bills.append(bill_number)
+                    continue
+                now = datetime.datetime.now().isoformat()
+                record = {
+                    **full,
+                    "added_at": now,
+                    "added_by": f"refreshdb (originally from channel history)",
+                    "last_checked": now,
+                    "last_alerted_action_date": full.get("last_action_date", ""),
+                }
+                self.storage.save_bill(key, record)
+                added_bills.append(bill_number)
+                log.info("refreshdb: restored bill %s", bill_number)
+
+        bill_lines = []
+        if added_bills:
+            bill_lines.append(f"✅ Bills restored ({len(added_bills)}): {', '.join(added_bills)}")
+        if failed_bills:
+            bill_lines.append(f"❌ Bills failed ({len(failed_bills)}): {', '.join(failed_bills)}")
+        if not bill_numbers:
+            bill_lines.append("ℹ️ No `!addbill` commands found in channel history.")
+        await ctx.send("\n".join(bill_lines) if bill_lines else "ℹ️ No bills to restore.")
+
+        # ------------------------------------------------------------------
+        # Part 2 — Calendar: parse saved .ics exports
+        # ------------------------------------------------------------------
+        data_dir = Path(os.environ.get("DATA_DIR", "data"))
+        ics_dir = data_dir / "ics_exports"
+        ics_files = sorted(ics_dir.glob("*.ics")) if ics_dir.exists() else []
+
+        if not ics_files:
+            await ctx.send("ℹ️ No saved ICS exports found — calendar not restored.")
+            log.info("refreshdb: no ICS files in %s", ics_dir)
+        else:
+            await ctx.send(f"📅 Restoring calendar from {len(ics_files)} ICS export(s)...")
+            restored_events: list[dict] = []
+            for ics_path in ics_files:
+                try:
+                    cal = icalendar.Calendar.from_ical(ics_path.read_bytes())
+                    for component in cal.walk():
+                        if component.name != "VEVENT":
+                            continue
+                        uid = str(component.get("UID", ""))
+                        title = str(component.get("SUMMARY", "Event"))
+                        dtstart = component.get("DTSTART")
+                        dtend = component.get("DTEND")
+                        if not dtstart or not uid:
+                            continue
+                        dt = dtstart.dt
+                        if isinstance(dt, datetime.datetime):
+                            date_str = dt.date().isoformat()
+                            start_time = dt.strftime("%H:%M")
+                        else:
+                            date_str = dt.isoformat()
+                            start_time = "00:00"
+                        end_time = None
+                        if dtend:
+                            et = dtend.dt
+                            if isinstance(et, datetime.datetime):
+                                end_time = et.strftime("%H:%M")
+                        restored_events.append({
+                            "uid": uid,
+                            "date": date_str,
+                            "day_name": datetime.date.fromisoformat(date_str).strftime("%A"),
+                            "title": title,
+                            "start_time": start_time,
+                            "end_time": end_time,
+                            "user": "restored",
+                            "alerted": False,
+                        })
+                except Exception as exc:
+                    log.error("refreshdb: failed to parse %s: %s", ics_path.name, exc)
+
+            calendar_storage = self.bot.storage_manager.get("calendar")
+            calendar_storage.restore_events(restored_events)
+            log.info("refreshdb: restored %d calendar event(s) from %d ICS file(s)", len(restored_events), len(ics_files))
+            await ctx.send(f"✅ Calendar restored — {len(restored_events)} event(s) from {len(ics_files)} ICS file(s).")
+
+        log.info(
+            "refreshdb complete — bills: added=%d failed=%d | calendar_events=%d",
+            len(added_bills), len(failed_bills),
+            len(restored_events) if ics_files else 0,
+        )
 
     @commands.command(name="billreport")
     async def bill_report(self, ctx: commands.Context, *, target: str = "all") -> None:
