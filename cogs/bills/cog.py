@@ -6,6 +6,7 @@ Commands (prefix !):  [must be sent in CH_MBT_COMMAND_ID]
   !addbills                        — bulk-add bills from an attached .csv or .xlsx
   !removebill <bill_number>        — stop tracking a bill
   !listbills                       — show all tracked bills with current status
+  !billhistory <bill_number>       — show the full legislative history for a bill
   !checkbills                      — force an immediate update poll
   !setpollhours <hours>            — change the polling interval at runtime
   !billreport <bill_number|all>    — upload Excel report to CH_MBT_REPORTS_ID
@@ -407,6 +408,43 @@ class BillsCog(commands.Cog):
                 value=value,
                 inline=False,
             )
+        await ctx.send(embed=embed)
+
+    @commands.command(name="billhistory")
+    async def bill_history(self, ctx: commands.Context, bill_number: str) -> None:
+        """Show legislative history for a tracked bill. Usage: !billhistory S1234"""
+        bill_number = bill_number.upper()
+        log.info("Command 'billhistory' by %s — bill_number=%s", ctx.author, bill_number)
+        key = self.storage.bill_key(bill_number)
+        bill = self.storage.get_bill(key)
+        if not bill:
+            await ctx.send(f"`{bill_number}` is not being tracked.")
+            return
+
+        history = bill.get("history", [])
+        if not history:
+            await ctx.send(f"No history available for `{bill_number}`.")
+            return
+
+        # Show most recent first, capped at 10 to stay within Discord embed limits
+        recent = list(reversed(history))[:10]
+        embed = discord.Embed(
+            title=f"📋 History: {bill_number}",
+            description=bill.get("title", ""),
+            color=discord.Color.blue(),
+        )
+        for entry in recent:
+            chamber = entry.get("chamber", "")
+            label = f"{entry.get('date', '—')}"
+            if chamber:
+                label += f" [{chamber}]"
+            embed.add_field(name=label, value=entry.get("action", "—"), inline=False)
+
+        if len(history) > 10:
+            embed.set_footer(text=f"Showing 10 most recent of {len(history)} total action(s)")
+        else:
+            embed.set_footer(text=f"{len(history)} action(s) total")
+
         await ctx.send(embed=embed)
 
     @commands.command(name="checkbills")

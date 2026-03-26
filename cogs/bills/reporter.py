@@ -54,26 +54,36 @@ def build_all_report(bills: list[dict[str, Any]]) -> bytes:
     Build a multi-bill summary Excel report.
 
     Single sheet 'Bills':
-      Bill # | Title | Status | Last Action | Last Action Date | Sponsors
+      Bill # | Title | Status | Last Action | Last Action Date | Recent History (last 3) | Sponsors
     Rows where last_action_date > last_alerted_action_date are highlighted yellow.
     """
     wb = Workbook()
     ws = wb.active
     ws.title = "Bills"
 
-    headers = ["Bill #", "Title", "Status", "Last Action", "Last Action Date", "Sponsors"]
+    headers = ["Bill #", "Title", "Status", "Last Action", "Last Action Date", "Recent History (last 3)", "Sponsors"]
     _write_header_row(ws, headers)
 
+    # Column index for "Recent History (last 3)" — used to enable wrap_text
+    _HISTORY_COL = 6
+
     for bill in bills:
+        recent_history = bill.get("history", [])[-3:]
+        history_text = "\n".join(
+            f"{h.get('date', '')} — {h.get('action', '')}"
+            for h in reversed(recent_history)
+        )
         row = [
             bill.get("bill_number", ""),
             bill.get("title", ""),
             bill.get("status", ""),
             bill.get("last_action", ""),
             bill.get("last_action_date", ""),
+            history_text,
             ", ".join(bill.get("sponsors", [])),
         ]
         ws.append(row)
+        ws.cell(row=ws.max_row, column=_HISTORY_COL).alignment = Alignment(wrap_text=True)
 
         # Highlight row if there's a new action since the last alert
         last_date = bill.get("last_action_date", "")
