@@ -6,6 +6,7 @@ Commands (prefix !):  [must be sent in CH_MBT_COMMAND_ID]
   !removebill <bill_number>        — stop tracking a bill
   !listbills                       — show all tracked bills with current status
   !checkbills                      — force an immediate update poll
+  !setpollhours <hours>            — change the polling interval at runtime
   !billreport <bill_number|all>    — upload Excel report to CH_MBT_REPORTS_ID
     e.g. !billreport S1234
          !billreport all
@@ -266,6 +267,16 @@ class BillsCog(commands.Cog):
         await ctx.send("🔄 Checking for bill updates...")
         await self._poll()
         await ctx.send("✅ Done checking.")
+
+    @commands.command(name="setpollhours")
+    async def set_poll_hours(self, ctx: commands.Context, hours: int) -> None:
+        """Change the bill polling interval. Usage: !setpollhours <hours>"""
+        if hours < 1:
+            await ctx.send("Poll interval must be at least 1 hour.")
+            return
+        self._poll.change_interval(hours=hours)
+        log.info("Bills poll interval changed to %d hour(s) by %s", hours, ctx.author)
+        await ctx.send(f"✅ Poll interval updated to every {hours} hour(s).")
 
     @commands.command(name="billreport")
     async def bill_report(self, ctx: commands.Context, *, target: str = "all") -> None:
