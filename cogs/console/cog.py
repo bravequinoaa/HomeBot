@@ -18,7 +18,6 @@ import datetime
 import io
 import logging
 import os
-import platform
 import sys
 from pathlib import Path
 
@@ -163,11 +162,6 @@ class ConsoleCog(commands.Cog):
         embed.add_field(name="Calendar Events", value=str(calendar_count))
         embed.add_field(name="Bills Poll", value=poll_info, inline=False)
         embed.add_field(name="Log File", value=log_size_str)
-        embed.add_field(
-            name="Environment",
-            value=f"Python {sys.version.split()[0]}  •  discord.py {discord.__version__}  •  {platform.system()}",
-            inline=False,
-        )
         await ctx.send(embed=embed)
 
 
