@@ -64,6 +64,7 @@ _storage_log.addHandler(_storage_fh)
 
 # Add new cog module paths here to extend the bot
 COGS = [
+    "cogs.console",
     "cogs.schedule",
     "cogs.alerts",
     "cogs.bills",
