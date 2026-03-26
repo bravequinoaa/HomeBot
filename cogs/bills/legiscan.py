@@ -139,7 +139,8 @@ class LegiScanClient:
             resp.raise_for_status()
             payload = resp.json()
         except httpx.HTTPError as exc:
-            raise LegiScanError(f"HTTP error: {exc}") from exc
+            safe_msg = str(exc).replace(self._key, "{key}")
+            raise LegiScanError(f"HTTP error: {safe_msg}") from exc
 
         if payload.get("status") == "ERROR":
             msg = payload.get("alert", {}).get("message", "Unknown LegiScan error")
