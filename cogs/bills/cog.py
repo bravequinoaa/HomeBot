@@ -38,7 +38,7 @@ import openpyxl
 from discord.ext import commands, tasks
 
 from .legiscan import LegiScanClient, LegiScanError
-from .reporter import build_all_report, build_single_report
+from .reporter import build_all_report, build_poll_report, build_single_report
 from .storage import BillsStorage
 
 log = logging.getLogger("homebot.bills")
@@ -118,6 +118,10 @@ class BillsCog(commands.Cog):
         self._poll.start()
         log.info("Bills cog started — polling every %d hour(s)", poll_hours)
 
+        # Tracks whether the last completed poll found no changes.
+        # False on startup so the first no-change poll still generates a report.
+        self._last_poll_was_no_change: bool = False
+
     def cog_unload(self) -> None:
         self._poll.cancel()
 
@@ -137,7 +141,7 @@ class BillsCog(commands.Cog):
 
     @tasks.loop(hours=6)
     async def _poll(self) -> None:
-        """Fetch LegiScan master list, detect changed bills, send alerts."""
+        """Fetch LegiScan master list, detect changed bills, send alerts, upload report."""
         bills = self.storage.list_bills()
         if not bills:
             log.debug("Poll skipped — no bills are being tracked")
@@ -153,6 +157,8 @@ class BillsCog(commands.Cog):
         checked = 0
         updated = 0
         alerted = 0
+        changed_bills: list[dict] = []
+        unchanged_bills: list[dict] = []
 
         for bill in bills:
             bill_number = bill.get("bill_number", "")
@@ -163,12 +169,14 @@ class BillsCog(commands.Cog):
             entry = master.get(bill_number)
             if not entry:
                 log.debug("Poll: %s not found in master list", bill_number)
+                unchanged_bills.append(bill)
                 continue
 
             old_hash = bill.get("change_hash", "")
             new_hash = entry["change_hash"]
             if new_hash == old_hash:
                 log.debug("Poll: %s unchanged (hash=%s)", bill_number, old_hash)
+                unchanged_bills.append(bill)
                 continue
 
             log.info(
@@ -181,6 +189,7 @@ class BillsCog(commands.Cog):
                 updated_data = await self.client.get_bill(entry["bill_id"])
             except LegiScanError as exc:
                 log.error("Poll: failed to fetch bill %s: %s", bill_number, exc)
+                unchanged_bills.append(bill)
                 continue
 
             # Merge fetched data into stored bill (preserve added_by, added_at, etc.)
@@ -197,6 +206,7 @@ class BillsCog(commands.Cog):
                 alerted += 1
 
             self.storage.save_bill(key, merged)
+            changed_bills.append(merged)
             log.info(
                 "Poll: updated %s — action: %s",
                 bill_number, updated_data.get("last_action"),
@@ -206,6 +216,8 @@ class BillsCog(commands.Cog):
             "Poll complete — %d checked, %d updated, %d alerted",
             checked, updated, alerted,
         )
+
+        await self._post_poll_report(changed_bills, unchanged_bills)
 
     @_poll.before_loop
     async def _before_poll(self) -> None:
@@ -226,6 +238,54 @@ class BillsCog(commands.Cog):
             f"🔗 {bill['url']}"
         )
         log.info("Bills alert: sent update for %s to alerts channel", bill["bill_number"])
+
+    async def _post_poll_report(
+        self,
+        changed_bills: list[dict],
+        unchanged_bills: list[dict],
+    ) -> None:
+        """Upload a report (or send a no-update notice) to the reports channel."""
+        reports_channel = self.bot.get_channel(self.reports_channel_id)
+        if not reports_channel:
+            log.warning(
+                "Bills reports channel (CH_MBT_REPORTS_ID=%d) not found — skipping poll report",
+                self.reports_channel_id,
+            )
+            return
+
+        today = datetime.date.today().strftime("%m%d%y")
+
+        if changed_bills:
+            # Changes found — generate split report (changed on top, unchanged below)
+            xlsx_bytes = build_poll_report(changed_bills, unchanged_bills)
+            filename = f"bills_report_{today}.xlsx"
+            await reports_channel.send(
+                file=discord.File(io.BytesIO(xlsx_bytes), filename=filename)
+            )
+            log.info(
+                "Poll report: uploaded changes report (%d changed, %d unchanged)",
+                len(changed_bills), len(unchanged_bills),
+            )
+            self._last_poll_was_no_change = False
+
+        elif not self._last_poll_was_no_change:
+            # First no-change poll since last update — generate standard all-bills report
+            xlsx_bytes = build_poll_report([], unchanged_bills)
+            filename = f"bills_report_{today}.xlsx"
+            await reports_channel.send(
+                file=discord.File(io.BytesIO(xlsx_bytes), filename=filename)
+            )
+            log.info(
+                "Poll report: uploaded standard all-bills report (%d bills, no changes)",
+                len(unchanged_bills),
+            )
+            self._last_poll_was_no_change = True
+
+        else:
+            # Subsequent no-change poll — just post a notice, no new file
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            await reports_channel.send(f"No updates found - {now_str}")
+            log.info("Poll report: no changes — sent notice to reports channel")
 
     # ------------------------------------------------------------------
     # Commands
