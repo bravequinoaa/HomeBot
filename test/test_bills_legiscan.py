@@ -73,30 +73,24 @@ _MASTER_LIST_PAYLOAD = {
 
 @pytest.mark.asyncio
 async def test_search_bill_returns_result():
-    """search_bill parses a successful response and returns the matching bill."""
+    """search_bill finds a bill by exact number via the master list."""
     client = _make_client()
-    client._http.get = AsyncMock(return_value=_mock_response(_SEARCH_PAYLOAD))
+    # search_bill now calls get_master_list internally
+    client._http.get = AsyncMock(return_value=_mock_response(_MASTER_LIST_PAYLOAD))
 
     result = await client.search_bill("S1234")
 
     assert result is not None
     assert result["bill_id"] == 99
     assert result["bill_number"] == "S1234"
-    assert "title" in result
     assert "url" in result
 
 
 @pytest.mark.asyncio
 async def test_search_bill_returns_none_on_empty():
-    """search_bill returns None when there are no matching results."""
+    """search_bill returns None when the bill is not in the master list."""
     client = _make_client()
-    empty_payload = {
-        "status": "OK",
-        "searchresult": {
-            "0": {"query": "S9999", "summary": "0 results"},
-        },
-    }
-    client._http.get = AsyncMock(return_value=_mock_response(empty_payload))
+    client._http.get = AsyncMock(return_value=_mock_response(_MASTER_LIST_PAYLOAD))
 
     result = await client.search_bill("S9999")
     assert result is None
@@ -147,5 +141,6 @@ async def test_api_error_raises_legiscan_error():
     }
     client._http.get = AsyncMock(return_value=_mock_response(error_payload))
 
+    # get_master_list (called by search_bill) raises LegiScanError on API errors
     with pytest.raises(LegiScanError, match="Invalid API key"):
-        await client.search_bill("S1234")
+        await client.get_master_list()

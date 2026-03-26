@@ -59,38 +59,28 @@ class LegiScanClient:
         self, bill_number: str, state: str = "NJ"
     ) -> dict[str, Any] | None:
         """
-        Search for a bill by number in the given state.
+        Look up a bill by exact number using the master list.
 
-        Returns a dict with keys: bill_id, bill_number, title, state, url
-        or None if not found.
+        LegiScan's full-text 'search' op is unreliable for exact bill-number
+        lookups — it searches titles and text, not bill numbers. getMasterList
+        returns every bill in the current session indexed by number, so we use
+        that as the authoritative lookup.
+
+        Returns a dict with keys: bill_id, bill_number, state, url
+        or None if the bill is not found in the current session.
         """
-        params = {
-            "key": self._key,
-            "op": "search",
+        master = await self.get_master_list(state)
+        entry = master.get(bill_number.upper())
+        if not entry:
+            log.debug("search_bill: %s not found in %s master list", bill_number, state)
+            return None
+        log.debug("search_bill: found %s → bill_id=%s", bill_number, entry["bill_id"])
+        return {
+            "bill_id": entry["bill_id"],
+            "bill_number": bill_number.upper(),
             "state": state,
-            "query": bill_number,
-            "year": 2,  # current + previous session
+            "url": _nj_url(bill_number),
         }
-        data = await self._get(params)
-        results = data.get("searchresult", {})
-
-        # LegiScan wraps results under numeric keys; "0" is a summary object
-        for key, item in results.items():
-            if key == "0":
-                continue
-            if not isinstance(item, dict):
-                continue
-            # Match exact bill number (case-insensitive)
-            if item.get("bill_number", "").upper() == bill_number.upper():
-                return {
-                    "bill_id": item["bill_id"],
-                    "bill_number": item["bill_number"],
-                    "title": item.get("title", ""),
-                    "state": state,
-                    "url": _nj_url(item["bill_number"]),
-                }
-
-        return None
 
     async def get_bill(self, bill_id: int) -> dict[str, Any]:
         """

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import logging.handlers
 import os
 from pathlib import Path
 
@@ -28,6 +29,23 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("homebot")
+
+# ------------------------------------------------------------------
+# Main log file — INFO+ from all homebot.* loggers to LOGS_DIR/homebot.log
+# Rotates at 10 MB, keeps 5 backups.
+# ------------------------------------------------------------------
+_main_fh = logging.handlers.RotatingFileHandler(
+    LOGS_DIR / "homebot.log",
+    maxBytes=10 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+_main_fh.setLevel(logging.INFO)
+_main_fh.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+log.addHandler(_main_fh)
 
 # ------------------------------------------------------------------
 # Storage logger — DEBUG+ to LOGS_DIR/storage.log
