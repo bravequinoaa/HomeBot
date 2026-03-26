@@ -1,20 +1,22 @@
 """
 Bills Cog — track NJ Legislature bills and send @everyone alerts on updates.
 
-Commands (prefix !):
+Commands (prefix !):  [must be sent in CH_MBT_COMMAND_ID]
   !addbill <bill_number>           — start tracking a bill (e.g. !addbill S1234)
   !removebill <bill_number>        — stop tracking a bill
   !listbills                       — show all tracked bills with current status
   !checkbills                      — force an immediate update poll
-  !billreport <bill_number|all>    — upload Excel report
+  !billreport <bill_number|all>    — upload Excel report to CH_MBT_REPORTS_ID
     e.g. !billreport S1234
          !billreport all
          !billreport S1234,A567    (comma-separated subset)
 
 Environment variables:
-  CH_BILLS_CHANNEL_ID   Discord channel ID for @everyone update alerts
-  LEGISCAN_API_KEY      LegiScan API key (free at legiscan.com)
-  BILLS_POLL_HOURS      How often to poll for updates (default: 6)
+  CH_MBT_COMMAND_ID    Discord channel ID where commands are accepted
+  CH_MBT_REPORTS_ID    Discord channel ID where Excel reports are uploaded
+  CH_MBT_ALERT_ID      Discord channel ID for @everyone bill update alerts
+  LEGISCAN_API_KEY     LegiScan API key (free at legiscan.com)
+  BILLS_POLL_HOURS     How often to poll for updates (default: 6)
 """
 
 from __future__ import annotations
@@ -39,14 +41,33 @@ class BillsCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-
-        raw_ch = os.environ.get("CH_BILLS_CHANNEL_ID")
-        if not raw_ch:
-            raise RuntimeError("CH_BILLS_CHANNEL_ID is not set in the environment.")
+        # Set commands channel id
+        raw_cmd = os.environ.get("CH_MBT_COMMAND_ID")
+        if not raw_cmd:
+            raise RuntimeError("CH_MBT_COMMAND_ID is not set in the environment.")
         try:
-            self.channel_id = int(raw_ch)
+            self.channel_id = int(raw_cmd)
         except ValueError:
-            raise RuntimeError(f"CH_BILLS_CHANNEL_ID must be an integer, got: {raw_ch!r}")
+            raise RuntimeError(f"CH_MBT_COMMAND_ID must be an integer, got: {raw_cmd!r}")
+
+        # Set reports channel id
+        raw_reports = os.environ.get("CH_MBT_REPORTS_ID")
+        if not raw_reports:
+            raise RuntimeError("CH_MBT_REPORTS_ID is not set in the environment.")
+        try:
+            self.reports_channel_id = int(raw_reports)
+        except ValueError:
+            raise RuntimeError(f"CH_MBT_REPORTS_ID must be an integer, got: {raw_reports!r}")
+
+        # Set alerts channel id
+        raw_alert = os.environ.get("CH_MBT_ALERT_ID")
+        if not raw_alert:
+            raise RuntimeError("CH_MBT_ALERT_ID is not set in the environment.")
+        try:
+            self.alert_channel_id = int(raw_alert)
+        except ValueError:
+            raise RuntimeError(f"CH_MBT_ALERT_ID must be an integer, got: {raw_alert!r}")
+        
 
         api_key = os.environ.get("LEGISCAN_API_KEY")
         if not api_key:
@@ -60,6 +81,16 @@ class BillsCog(commands.Cog):
 
     def cog_unload(self) -> None:
         self._poll.cancel()
+
+    async def cog_check(self, ctx: commands.Context) -> bool:
+        """Only process commands sent in the designated commands channel."""
+        if ctx.channel.id != self.channel_id:
+            log.debug(
+                "Bills command '%s' from %s ignored — wrong channel (%d)",
+                ctx.command.name, ctx.author, ctx.channel.id,
+            )
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Background poll
@@ -119,9 +150,9 @@ class BillsCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _send_alert(self, bill: dict) -> None:
-        channel = self.bot.get_channel(self.channel_id)
+        channel = self.bot.get_channel(self.alert_channel_id)
         if not channel:
-            log.warning("Bills alert channel %d not found", self.channel_id)
+            log.warning("Bills alerts channel (CH_MBT_ALERT_ID=%d) not found", self.alert_channel_id)
             return
 
         await channel.send(
@@ -132,7 +163,7 @@ class BillsCog(commands.Cog):
             f"**Status:** {bill['status']}\n"
             f"🔗 {bill['url']}"
         )
-        log.info("Sent update alert for %s", bill["bill_number"])
+        log.info("Bills alert: sent update for %s to alerts channel", bill["bill_number"])
 
     # ------------------------------------------------------------------
     # Commands
@@ -279,7 +310,13 @@ class BillsCog(commands.Cog):
                 xlsx_bytes = build_single_report(bill)
                 filename = f"{bill_number}_report_{today}.xlsx"
 
-        await ctx.send(
+        reports_channel = self.bot.get_channel(self.reports_channel_id)
+        if not reports_channel:
+            log.warning("Bills reports channel (CH_MBT_REPORTS_ID=%d) not found", self.reports_channel_id)
+            await ctx.send("Error: reports channel not found.")
+            return
+
+        await reports_channel.send(
             file=discord.File(io.BytesIO(xlsx_bytes), filename=filename)
         )
-        log.info("Report '%s' sent to %s", filename, ctx.author)
+        log.info("Bills report: '%s' uploaded to reports channel by %s", filename, ctx.author)
