@@ -21,7 +21,7 @@ import pytz
 import discord
 from discord.ext import commands, tasks
 
-from . import storage
+from .storage import CalendarStorage
 
 log = logging.getLogger("homebot.alerts")
 
@@ -40,6 +40,11 @@ class AlertsCog(commands.Cog):
             self.alerts_channel_id = int(raw)
         except ValueError:
             raise RuntimeError(f"CH_CALENDAR_ALERTS must be an integer, got: {raw!r}")
+
+        # Storage instance provided by the shared StorageManager
+        self.storage: CalendarStorage = bot.storage_manager.get("calendar")
+        log.info("AlertsCog using storage instance 0x%x", id(self.storage))
+
         self._alerts_enabled = True
         self._check_alerts.start()
 
@@ -57,10 +62,13 @@ class AlertsCog(commands.Cog):
         uploader_id: int,
         uploader_name: str,
     ) -> None:
-        user = storage.resolve_user(uploader_id, uploader_name)
-        storage.save_events(anchored_events, user)
-        storage.prune_old_events()
-        log.info("Stored %d events for user %s", len(anchored_events), user)
+        user = self.storage.resolve_user(uploader_id, uploader_name)
+        self.storage.save_events(anchored_events, user)
+        self.storage.prune_old_events()
+        log.info(
+            "Stored %d event(s) for user %s (discord_id=%d)",
+            len(anchored_events), user, uploader_id,
+        )
 
     # -----------------------------------------------------------------------
     # Background task — check every 60 s for events ~5 minutes away
@@ -73,7 +81,7 @@ class AlertsCog(commands.Cog):
 
         now = datetime.datetime.now(EASTERN)
 
-        for event in storage.load_events():
+        for event in self.storage.load_events():
             if event.get("alerted"):
                 continue
 
@@ -93,12 +101,15 @@ class AlertsCog(commands.Cog):
             if 240 <= delta <= 360:  # 4–6 min window catches the 5-min mark
                 channel = self.bot.get_channel(self.alerts_channel_id)
                 if channel:
-                    time_str = event_dt.strftime("%-I:%M %p")  # e.g. "9:00 AM"
+                    time_str = event_dt.strftime("%-I:%M %p")
                     await channel.send(
                         f"@everyone\n5 MINUTES UNTIL: {event['title']} at {time_str}"
                     )
-                    log.info("Alert sent for event: %s", event["title"])
-                storage.mark_alerted(event["uid"])
+                    log.info(
+                        "Alert sent for event '%s' at %s (user=%s)",
+                        event["title"], time_str, event.get("user", "unknown"),
+                    )
+                self.storage.mark_alerted(event["uid"])
 
     @_check_alerts.before_loop
     async def _before_check(self) -> None:
@@ -112,12 +123,12 @@ class AlertsCog(commands.Cog):
     async def stop_alerts(self, ctx: commands.Context) -> None:
         """Disable @everyone alert sending."""
         self._alerts_enabled = False
-        log.info("Alerts disabled by %s", ctx.author)
+        log.info("Command 'stopalerts' by %s — alerts disabled", ctx.author)
         await ctx.send("Alerts disabled.")
 
     @commands.command(name="enablealerts")
     async def enable_alerts(self, ctx: commands.Context) -> None:
         """Enable @everyone alert sending."""
         self._alerts_enabled = True
-        log.info("Alerts enabled by %s", ctx.author)
+        log.info("Command 'enablealerts' by %s — alerts enabled", ctx.author)
         await ctx.send("Alerts enabled.")

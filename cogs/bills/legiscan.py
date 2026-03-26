@@ -134,6 +134,7 @@ class LegiScanClient:
 
     async def _get(self, params: dict) -> dict[str, Any]:
         """Make a GET request and validate the response envelope."""
+        op = params.get("op", "unknown")
         try:
             resp = await self._http.get(_BASE, params=params)
             resp.raise_for_status()
@@ -142,8 +143,17 @@ class LegiScanClient:
             safe_msg = str(exc).replace(self._key, "{key}")
             raise LegiScanError(f"HTTP error: {safe_msg}") from exc
 
+        status = payload.get("status", "?")
+        top_keys = list(payload.keys())
+        log.debug(
+            "LegiScan response op=%s http_status=%d api_status=%s top_keys=%s",
+            op, resp.status_code, status, top_keys,
+        )
+        log.debug("LegiScan raw response op=%s: %.500s", op, str(payload))
+
         if payload.get("status") == "ERROR":
             msg = payload.get("alert", {}).get("message", "Unknown LegiScan error")
+            log.warning("LegiScan API error op=%s: %s", op, msg)
             raise LegiScanError(msg)
 
         return payload
