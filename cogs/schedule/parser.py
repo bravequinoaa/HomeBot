@@ -195,7 +195,8 @@ async def parse_schedule(
                 "data": encoded,
             },
         }
-    else:
+    
+    elif file_type == 'image':
         client = anthropic.AsyncAnthropic(api_key=api_key)
         content_block = {
             "type": "image",
@@ -205,6 +206,7 @@ async def parse_schedule(
                 "data": encoded,
             },
         }
+    
 
     response = await client.messages.create(
         model=_MODEL,
