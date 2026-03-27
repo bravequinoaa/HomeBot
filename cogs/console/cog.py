@@ -164,10 +164,66 @@ class ConsoleCog(commands.Cog):
         embed.add_field(name="Log File", value=log_size_str)
         await ctx.send(embed=embed)
 
+    @commands.command(name="stat-schedule")
+    async def stat_schedule(self, ctx: commands.Context) -> None:
+        """Show calendar event count and the next 5 upcoming events."""
+        log.info("Command 'stat-schedule' by %s", ctx.author)
+
+        try:
+            cal_storage = self.bot.storage_manager.get("calendar")
+            all_events: list[dict] = cal_storage.load_events()
+        except Exception as exc:
+            await ctx.send(f"Could not read calendar storage: {exc}")
+            return
+
+        today = datetime.date.today().isoformat()
+        upcoming = sorted(
+            (ev for ev in all_events if ev.get("date", "") >= today),
+            key=lambda ev: (ev.get("date", ""), ev.get("start_time", "")),
+        )
+
+        header = (
+            "╔════════════════════════╗\n"
+            "   📋 Schedule Stats\n"
+            "╚════════════════════════╝"
+        )
+
+        lines = [
+            header,
+            f"**Total count:** {len(all_events)}",
+            "",
+            "**Upcoming** 🗓️",
+            "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
+        ]
+
+        if not upcoming:
+            lines.append("*No upcoming events.*")
+        else:
+            for ev in upcoming[:5]:
+                date_str = _fmt_event_date(ev.get("date", ""), ev.get("day_name", ""))
+                time_str = ev.get("start_time", "—")
+                title    = ev.get("title", "—")
+                user     = ev.get("user", "—")
+                lines.append(f"\n🌸 **{date_str}** ✦ *{time_str}*")
+                lines.append(f"> 📌 {title}")
+                lines.append(f"> 👤 for {user}")
+
+        await ctx.send("\n".join(lines))
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _fmt_event_date(iso_date: str, day_name: str) -> str:
+    """Return a human-friendly date string, e.g. 'Thursday, March 26'."""
+    try:
+        d = datetime.date.fromisoformat(iso_date)
+        day = day_name or d.strftime("%A")
+        return f"{day}, {d.strftime('%B %-d')}"
+    except ValueError:
+        return iso_date
+
 
 def _fmt_uptime(delta: datetime.timedelta) -> str:
     total = int(delta.total_seconds())
