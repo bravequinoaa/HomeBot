@@ -1,13 +1,17 @@
-"""Unit tests for the _poll method in BillsCog — verifying bill update detection."""
+"""Unit tests for the MBT cog — poll logic and time-based scheduler."""
 
 from __future__ import annotations
 
+import datetime
+import textwrap
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cogs.bills.cog import BillsCog
-from cogs.bills.legiscan import LegiScanError
+from cogs.mbt.cog import BillsCog
+from cogs.mbt.legiscan import LegiScanError
+from util.scheduler_config import SchedulerConfig
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +44,7 @@ def _make_cog(storage_mock, client_mock):
     cog.reports_channel_id = 222
     cog.channel_id = 333
     cog._last_poll_was_no_change = False
+    cog._last_poll_time = None
     cog.bot = MagicMock()
     return cog
 
@@ -64,7 +69,7 @@ def _make_updated_bill_data(bill_number="S1234", new_action_date="2026-03-01"):
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Poll logic tests (unchanged behaviour)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -84,7 +89,7 @@ async def test_unchanged_bill_not_fetched_or_saved():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     client.get_bill.assert_not_called()
     storage.save_bill.assert_not_called()
@@ -110,12 +115,11 @@ async def test_changed_bill_is_fetched_and_saved():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     client.get_bill.assert_awaited_once_with(1)
     storage.save_bill.assert_called_once()
     saved_record = storage.save_bill.call_args[0][1]
-    # change_hash comes from the fetched bill data (merged into stored record)
     assert saved_record["change_hash"] == "xyz"
     assert saved_record["last_action"] == "Passed Senate"
 
@@ -141,7 +145,7 @@ async def test_alert_sent_when_action_date_advances():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     cog._send_alert.assert_awaited_once()
     alerted_bill = cog._send_alert.call_args[0][0]
@@ -169,7 +173,7 @@ async def test_last_alerted_action_date_updated_after_alert():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     saved_record = storage.save_bill.call_args[0][1]
     assert saved_record["last_alerted_action_date"] == "2026-03-01"
@@ -185,7 +189,6 @@ async def test_no_alert_when_action_date_unchanged():
     storage.list_bills.return_value = [stored]
     storage.bill_key.return_value = "NJ_S1234"
 
-    # New fetch returns same action date (e.g. only metadata changed)
     updated = _make_updated_bill_data(new_action_date="2026-03-01")
     client = MagicMock()
     client.get_master_list = AsyncMock(return_value={
@@ -197,7 +200,7 @@ async def test_no_alert_when_action_date_unchanged():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     storage.save_bill.assert_called_once()
     cog._send_alert.assert_not_called()
@@ -218,7 +221,7 @@ async def test_bill_missing_from_master_list_skipped():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     client.get_bill.assert_not_called()
     storage.save_bill.assert_not_called()
@@ -242,7 +245,7 @@ async def test_legiscan_error_on_get_bill_skips_update():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     storage.save_bill.assert_not_called()
     cog._send_alert.assert_not_called()
@@ -270,7 +273,7 @@ async def test_multiple_bills_only_changed_ones_updated():
     cog._send_alert = AsyncMock()
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     client.get_bill.assert_awaited_once_with(2)
     storage.save_bill.assert_called_once()
@@ -280,7 +283,7 @@ async def test_multiple_bills_only_changed_ones_updated():
 
 @pytest.mark.asyncio
 async def test_poll_skipped_when_no_bills_tracked():
-    """_poll exits immediately without hitting the API when the bill list is empty."""
+    """_do_poll exits immediately without hitting the API when the bill list is empty."""
     storage = MagicMock()
     storage.list_bills.return_value = []
 
@@ -290,6 +293,147 @@ async def test_poll_skipped_when_no_bills_tracked():
     cog = _make_cog(storage, client)
     cog._post_poll_report = AsyncMock()
 
-    await cog._poll()
+    await cog._do_poll()
 
     client.get_master_list.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SchedulerConfig tests
+# ---------------------------------------------------------------------------
+
+def _write_ini(tmp_path: Path, content: str) -> Path:
+    """Write a scheduler INI file and return its path."""
+    p = tmp_path / "scheduler_config.ini"
+    p.write_text(textwrap.dedent(content), encoding="utf-8")
+    return p
+
+
+def test_scheduler_weekday_times(tmp_path):
+    """Weekday mode returns the configured times on a Monday (weekday 0)."""
+    ini = _write_ini(tmp_path, """
+        [scheduler_configs]
+        modes=weekday
+        timezone=UTC
+
+        [mode_weekday]
+        days=0,1,2,3,4
+        times=0800,1700
+    """)
+    sc = SchedulerConfig(ini)
+
+    # Monday = weekday 0
+    monday = datetime.datetime(2026, 3, 30, 9, 0, tzinfo=datetime.timezone.utc)  # a Monday
+    with patch("util.scheduler_config.datetime") as mock_dt:
+        mock_dt.datetime.now.return_value = monday
+        times = sc.get_scheduled_times()
+
+    assert datetime.time(8, 0) in times
+    assert datetime.time(17, 0) in times
+    assert len(times) == 2
+
+
+def test_scheduler_weekend_excluded_on_weekday(tmp_path):
+    """Weekend mode times are not returned on a weekday."""
+    ini = _write_ini(tmp_path, """
+        [scheduler_configs]
+        modes=weekday,weekend
+        timezone=UTC
+
+        [mode_weekday]
+        days=0,1,2,3,4
+        times=0800
+
+        [mode_weekend]
+        days=5,6
+        times=1700
+    """)
+    sc = SchedulerConfig(ini)
+
+    monday = datetime.datetime(2026, 3, 30, 9, 0, tzinfo=datetime.timezone.utc)
+    with patch("util.scheduler_config.datetime") as mock_dt:
+        mock_dt.datetime.now.return_value = monday
+        times = sc.get_scheduled_times()
+
+    assert datetime.time(8, 0) in times
+    assert datetime.time(17, 0) not in times
+
+
+def test_scheduler_weekend_times_on_saturday(tmp_path):
+    """Weekend mode returns the correct times on a Saturday (weekday 5)."""
+    ini = _write_ini(tmp_path, """
+        [scheduler_configs]
+        modes=weekday,weekend
+        timezone=UTC
+
+        [mode_weekday]
+        days=0,1,2,3,4
+        times=0800
+
+        [mode_weekend]
+        days=5,6
+        times=1700
+    """)
+    sc = SchedulerConfig(ini)
+
+    saturday = datetime.datetime(2026, 4, 4, 12, 0, tzinfo=datetime.timezone.utc)  # a Saturday
+    with patch("util.scheduler_config.datetime") as mock_dt:
+        mock_dt.datetime.now.return_value = saturday
+        times = sc.get_scheduled_times()
+
+    assert datetime.time(17, 0) in times
+    assert datetime.time(8, 0) not in times
+
+
+def test_scheduler_no_matching_mode_returns_empty(tmp_path):
+    """Returns empty list when no mode covers today's weekday."""
+    ini = _write_ini(tmp_path, """
+        [scheduler_configs]
+        modes=weekday
+        timezone=UTC
+
+        [mode_weekday]
+        days=0,1,2,3,4
+        times=0800
+    """)
+    sc = SchedulerConfig(ini)
+
+    sunday = datetime.datetime(2026, 4, 5, 12, 0, tzinfo=datetime.timezone.utc)  # Sunday = 6
+    with patch("util.scheduler_config.datetime") as mock_dt:
+        mock_dt.datetime.now.return_value = sunday
+        times = sc.get_scheduled_times()
+
+    assert times == []
+
+
+def test_scheduler_missing_config_returns_empty(tmp_path):
+    """Returns empty list when the INI file does not exist."""
+    sc = SchedulerConfig(tmp_path / "nonexistent.ini")
+    times = sc.get_scheduled_times()
+    assert times == []
+
+
+def test_scheduler_deduplicates_overlapping_modes(tmp_path):
+    """If two modes both cover today and share a time, it appears only once."""
+    ini = _write_ini(tmp_path, """
+        [scheduler_configs]
+        modes=a,b
+        timezone=UTC
+
+        [mode_a]
+        days=0
+        times=0800,1700
+
+        [mode_b]
+        days=0
+        times=1700,2200
+    """)
+    sc = SchedulerConfig(ini)
+
+    monday = datetime.datetime(2026, 3, 30, 9, 0, tzinfo=datetime.timezone.utc)
+    with patch("util.scheduler_config.datetime") as mock_dt:
+        mock_dt.datetime.now.return_value = monday
+        times = sc.get_scheduled_times()
+
+    assert times.count(datetime.time(17, 0)) == 1
+    assert len(times) == 3  # 0800, 1700, 2200

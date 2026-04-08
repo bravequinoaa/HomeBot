@@ -67,7 +67,7 @@ COGS = [
     "cogs.console",
     "cogs.schedule",
     "cogs.alerts",
-    "cogs.bills",
+    "cogs.mbt",
 ]
 
 
@@ -82,7 +82,7 @@ async def main() -> None:
     # cog can call bot.storage_manager.get("<name>") in __init__.
     # ------------------------------------------------------------------
     from util.storage import StorageFactory, StorageManager
-    from cogs.bills.storage import BillsStorage
+    from cogs.mbt.storage import BillsStorage
     from cogs.alerts.storage import CalendarStorage
 
     factory = StorageFactory()

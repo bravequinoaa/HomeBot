@@ -34,7 +34,7 @@ _claude_log.propagate = False  # don't bubble up to the root logger
 
 _claude_handler = logging.handlers.RotatingFileHandler(
     _logs_dir / "claude_responses.log",
-    maxBytes=5 * 1024 * 1024,  # 5 MB per file
+    maxBytes= 10 * 1024 * 1024,  # 10 MB per file
     backupCount=3,
     encoding="utf-8",
 )
@@ -208,7 +208,7 @@ async def parse_schedule(
 
     response = await client.messages.create(
         model=_MODEL,
-        max_tokens=4096,
+        max_tokens=4096 * 2,
         system=_SYSTEM_PROMPT,
         messages=[
             {
