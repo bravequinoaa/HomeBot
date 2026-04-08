@@ -1,0 +1,18 @@
+[project]
+name = "homebot"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "discord-py>=2.3.0",
+    "anthropic>=0.25.0",
+    "icalendar>=5.0.0",
+    "python-dotenv>=1.0.0",
+    "pytz>=2024.1",
+    "httpx>=0.27.0",
+    "openpyxl>=3.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

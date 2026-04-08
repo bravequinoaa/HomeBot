@@ -17,11 +17,13 @@ import anthropic
 import discord
 from discord.ext import commands
 
+from .command_parser import CommandParseError, parse_add_args
 from .ics_builder import build_ics
 from .parser import (
     EmptyScheduleError,
     ScheduleParseError,
     _IMAGE_MIME_TYPES,
+    anchor_events,
     parse_schedule,
 )
 
@@ -51,6 +53,60 @@ class ScheduleCog(commands.Cog):
             self.upload_channel_id = int(raw)
         except ValueError:
             raise RuntimeError(f"CH_CALENDAR_UPLOAD_ID must be an integer, got: {raw!r}")
+
+    async def cog_check(self, ctx: commands.Context) -> bool:
+        """Restrict all prefix commands in this cog to the upload channel."""
+        return ctx.channel.id == self.upload_channel_id
+
+    @commands.command(name="add")
+    async def add_event(self, ctx: commands.Context, *, args: str = "") -> None:
+        """Add a single calendar event: !add [date] <time> <title>
+
+        date  : MM/DD | day-name (e.g. wednesday) | omit for today
+        time  : 0900 | 09:00 | 9:00am | 930pm  (am/pm must be attached)
+        title : event label (everything after the time)
+        """
+        log.info("!add by %s#%s — args=%r", ctx.author.name, ctx.author.discriminator, args)
+
+        if not args.strip():
+            await ctx.reply(
+                "**Usage:** `!add [date] <time> <title>`\n"
+                "**date** — `MM/DD`, day name (e.g. `friday`), or omit for today\n"
+                "**time** — `0900`, `09:00`, `9:00am`, `930pm` *(am/pm attached)*\n"
+                "**title** — event label"
+            )
+            return
+
+        try:
+            parsed = parse_add_args(args, reference_dt=datetime.datetime.now())
+        except CommandParseError as exc:
+            log.debug("!add parse error from %s: %s", ctx.author, exc)
+            await ctx.reply(f"Could not parse your command: {exc}")
+            return
+
+        try:
+            anchored_events = anchor_events(parsed)
+            filename, ics_bytes = build_ics(anchored_events)
+
+            ics_dir = Path(os.environ.get("DATA_DIR", "data")) / "ics_exports"
+            ics_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            export_path = ics_dir / f"{ts}_{filename}"
+            export_path.write_bytes(ics_bytes)
+            log.info(
+                "!add succeeded — event=%r date=%s time=%s saved=%s",
+                anchored_events[0]["title"],
+                anchored_events[0]["date"],
+                anchored_events[0]["start_time"],
+                export_path,
+            )
+
+            await ctx.reply(file=discord.File(io.BytesIO(ics_bytes), filename=filename))
+            self.bot.dispatch("schedule_parsed", anchored_events, ctx.author.id, ctx.author.name)
+
+        except Exception:
+            log.exception("!add unexpected error for args=%r", args)
+            await ctx.reply("An unexpected error occurred. Please try again.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
