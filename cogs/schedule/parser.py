@@ -125,9 +125,10 @@ Rules:
 - If a range like "630-10" appears, interpret as start 06:30 end 10:00.
 - Use context to disambiguate AM/PM (e.g. a block following morning events is AM).
 - If an event has no end time, set end_time to null.
-- Produce one entry per event per day. If the same day name appears multiple times
-  (e.g. two Mondays across two weeks), emit a separate event entry for each occurrence
-  with the correct date_string.
+- Produce one entry per distinct event. A single day may have many events — emit ALL
+  of them as separate entries. Never merge or skip events that share a day.
+  If the same day name appears multiple times across weeks (e.g. two Mondays),
+  emit a separate entry for each occurrence with the correct date_string.
 - Keep the title short and descriptive. Prefix it with a single relevant emoji
   (e.g. "💼 Work", "🍽️ Lunch", "📋 Meeting", "🏋️ Gym", "😴 Sleep", "🚗 Commute",
   "📚 Study", "🛒 Errands", "👨‍⚕️ Doctor", "🎉 Event"). If the schedule already has
@@ -208,7 +209,7 @@ async def parse_schedule(
 
     response = await client.messages.create(
         model=_MODEL,
-        max_tokens=4096 * 2,
+        max_tokens=4096 * 4,
         system=_SYSTEM_PROMPT,
         messages=[
             {
